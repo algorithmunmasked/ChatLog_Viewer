@@ -246,7 +246,7 @@ pip install -r requirements.txt
 
 ## License
 
-This is a standalone tool for personal use. Share and modify as needed.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Support
 
