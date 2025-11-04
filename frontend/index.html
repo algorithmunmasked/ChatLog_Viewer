@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatLog Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Ensure checkboxes are visible */
+        input[type="checkbox"] {
+            display: inline-block !important;
+            width: 16px !important;
+            height: 16px !important;
+            cursor: pointer;
+        }
+        .conversation-checkbox, #select-all {
+            appearance: auto !important;
+            -webkit-appearance: checkbox !important;
+            -moz-appearance: checkbox !important;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100">
+    <!-- Simple header for standalone app -->
+    <nav class="bg-blue-600 text-white p-4 mb-6">
+        <div class="container mx-auto">
+            <h1 class="text-xl font-bold">ChatLog Viewer</h1>
+            <p class="text-sm opacity-90">Local Standalone Tool</p>
+        </div>
+    </nav>
+
+    <div class="container mx-auto px-4 py-8">
+        <!-- Page Header -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 class="text-3xl font-bold text-gray-800 mb-2">ChatLog Viewer</h1>
+                    <p class="text-gray-600">View and explore ChatGPT export data with all metadata</p>
+                </div>
+                <div>
+                    <button id="importBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition-colors">
+                        Start Import
+                    </button>
+                    <button id="import-html" class="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                        Import HTML Files
+                    </button>
+                    <button id="export-selected" class="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700">
+                        Export Selected
+                    </button>
+                    <button id="refreshBtn" class="bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded-lg font-medium transition-colors ml-2">
+                        Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistics Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center">
+                    <div class="p-2 bg-blue-100 rounded-lg">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                        </svg>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Conversations</p>
+                        <p class="text-2xl font-bold text-gray-900" id="stats-conversations">-</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center">
+                    <div class="p-2 bg-green-100 rounded-lg">
+                        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"></path>
+                        </svg>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Messages</p>
+                        <p class="text-2xl font-bold text-gray-900" id="stats-messages">-</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center">
+                    <div class="p-2 bg-purple-100 rounded-lg">
+                        <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path>
+                        </svg>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Feedback</p>
+                        <p class="text-2xl font-bold text-gray-900" id="stats-feedback">-</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center">
+                    <div class="p-2 bg-orange-100 rounded-lg">
+                        <svg class="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Timeline Events</p>
+                        <p class="text-2xl font-bold text-gray-900" id="stats-timeline">-</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="bg-white rounded-lg shadow-md mb-6">
+            <div class="border-b border-gray-200">
+                <nav class="flex -mb-px">
+                    <button id="tab-list" class="tab-button active px-6 py-4 text-sm font-medium text-blue-600 border-b-2 border-blue-600">
+                        List View
+                    </button>
+                    <button id="tab-timeline" class="tab-button px-6 py-4 text-sm font-medium text-gray-500 hover:text-gray-700">
+                        Timeline View
+                    </button>
+                    <button id="tab-ttl" class="tab-button px-6 py-4 text-sm font-medium text-gray-500 hover:text-gray-700">
+                        TTL Data (Auth/Geo/IP)
+                    </button>
+                    <button id="tab-filtered" class="tab-button px-6 py-4 text-sm font-medium text-gray-500 hover:text-gray-700">
+                        🔒 Content Filter Events
+                    </button>
+                </nav>
+            </div>
+        </div>
+
+        <!-- List View -->
+        <div id="view-list" class="view-container">
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Conversations</h2>
+                    <div class="flex items-center space-x-4">
+                        <input type="text" id="search-input" placeholder="Search conversations..." 
+                               class="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <label class="flex items-center space-x-2 text-sm text-gray-700 whitespace-nowrap">
+                            <input type="checkbox" id="search-in-messages" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            <span>Search in messages</span>
+                        </label>
+                        <select id="conversations-sort-order" class="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="newest">Newest First</option>
+                            <option value="oldest">Oldest First</option>
+                        </select>
+                        <select id="page-size" class="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="20">20 per page</option>
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="conversations-list" class="overflow-x-auto">
+                    <!-- Conversations will be loaded here -->
+                </div>
+                <div id="pagination" class="mt-4 flex justify-center">
+                    <!-- Pagination will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Filtered Messages View -->
+        <div id="view-filtered" class="view-container hidden">
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-gray-800">Content Filter Events</h2>
+                        <p class="text-sm text-gray-600 mt-1">Messages that may have triggered content filters or safety checks</p>
+                    </div>
+                    <select id="filtered-page-size" class="px-4 py-2 border border-gray-300 rounded-lg">
+                        <option value="50">50 per page</option>
+                        <option value="100">100 per page</option>
+                        <option value="200">200 per page</option>
+                    </select>
+                </div>
+                <div id="filtered-messages-list" class="space-y-4">
+                    <!-- Filtered messages will be loaded here -->
+                </div>
+                <div id="filtered-pagination" class="mt-4 flex justify-center">
+                    <!-- Pagination will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- TTL Data View -->
+        <div id="view-ttl" class="view-container hidden">
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">TTL Sessions (Geolocation/IP Data)</h2>
+                    <select id="ttl-page-size" class="px-4 py-2 border border-gray-300 rounded-lg">
+                        <option value="50">50 per page</option>
+                        <option value="100">100 per page</option>
+                        <option value="200">200 per page</option>
+                    </select>
+                </div>
+                <div id="ttl-sessions-list" class="space-y-4">
+                    <!-- TTL sessions will be loaded here -->
+                </div>
+                <div id="ttl-pagination" class="mt-4 flex justify-center">
+                    <!-- Pagination will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Timeline View -->
+        <div id="view-timeline" class="view-container hidden">
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800">Timeline</h2>
+                    <div class="flex items-center space-x-4">
+                        <select id="timeline-event-type" class="px-4 py-2 border border-gray-300 rounded-lg">
+                            <option value="">All Events</option>
+                            <option value="conversation_created">Conversations</option>
+                            <option value="message_sent">Messages</option>
+                            <option value="feedback_given">Feedback</option>
+                        </select>
+                        <select id="timeline-page-size" class="px-4 py-2 border border-gray-300 rounded-lg">
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                            <option value="200">200 per page</option>
+                        </select>
+                        <select id="timeline-sort-order" class="px-4 py-2 border border-gray-300 rounded-lg">
+                            <option value="newest">Newest First</option>
+                            <option value="oldest">Oldest First</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div class="flex items-center space-x-4 flex-wrap">
+                        <div class="flex items-center space-x-2">
+                            <label class="text-sm font-medium text-gray-700">Start Date:</label>
+                            <input type="datetime-local" id="timeline-start-date" class="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <label class="text-sm font-medium text-gray-700">End Date:</label>
+                            <input type="datetime-local" id="timeline-end-date" class="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                        </div>
+                        <button id="timeline-clear-dates" class="px-3 py-2 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-100">
+                            Clear Dates
+                        </button>
+                        <div class="flex items-center space-x-2 flex-1">
+                            <label class="text-sm font-medium text-gray-700">Search:</label>
+                            <input type="text" id="timeline-search-input" placeholder="Search in conversation titles and messages..." 
+                                   class="px-3 py-2 border border-gray-300 rounded-lg text-sm flex-1 max-w-md">
+                            <button id="timeline-search-btn" class="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                                Search
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div id="timeline-list" class="space-y-4">
+                    <!-- Timeline events will be loaded here -->
+                </div>
+                <div id="timeline-pagination" class="mt-4 flex justify-center">
+                    <!-- Pagination will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Detail View Modal -->
+        <div id="detail-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 overflow-y-auto">
+            <div class="flex items-center justify-center min-h-screen px-4">
+                <div class="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+                    <div class="flex justify-between items-center p-6 border-b border-gray-200">
+                        <h2 id="detail-title" class="text-2xl font-bold text-gray-800">Conversation Details</h2>
+                        <button id="close-detail" class="text-gray-500 hover:text-gray-700">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
+                        <div id="detail-content">
+                            <!-- Detail content will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Import Status Modal -->
+        <div id="import-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 overflow-y-auto">
+            <div class="flex items-center justify-center min-h-screen px-4">
+                <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full p-6">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">Import Status</h2>
+                    <div id="import-status-content">
+                        <!-- Import status will be loaded here -->
+                    </div>
+                    <button id="close-import" class="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
