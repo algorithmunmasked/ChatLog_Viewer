@@ -1,6 +1,6 @@
 # ChatLog Viewer - Standalone Application
 
-A standalone tool for viewing and exploring ChatGPT export data with all metadata. This application extracts and displays conversations, messages, feedback, timeline events, and geolocation data from ChatGPT export files.
+A standalone tool for viewing and exploring ChatGPT/Grok/Claude export data with all metadata. This application extracts and displays conversations, messages, feedback, timeline events, and geolocation data from ChatGPT export files.
 
 ## Features
 
