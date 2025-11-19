@@ -1,7 +1,7 @@
 """
 Standalone FastAPI application for ChatGPT Viewer
-Run with: uvicorn ChatGPT_Viewer.main:app --reload
-Or from this directory: uvicorn main:app --reload
+Run with: uvicorn app.main:app --reload --port 8002
+Or from project root: uvicorn app.main:app --reload --port 8002
 """
 import os
 from fastapi import FastAPI, Request
