@@ -97,7 +97,7 @@ All notable changes to the ChatLog Viewer project will be documented in this fil
 - `frontend/app.js` - Added file picker handler, cleanup handler, delete conversation handler, fixed date range reading, updated date display, added word wrapping for titles
 - `frontend/index.html` - Added "Import Single File" and "Cleanup HTML Messages" buttons
 
-## [Unreleased] - 2024-11-20
+## [Version 1.2] - 2024-11-20
 
 ### Added
 
