@@ -1,13 +1,15 @@
 """
 API Endpoints for ChatGPT Viewer
 """
-from fastapi import APIRouter, HTTPException, Query, Depends, Request
+from fastapi import APIRouter, HTTPException, Query, Depends, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 import json
+import os
+import tempfile
 
 from .database_service import ChatGPTDatabaseService
 from .import_service import ChatGPTImportService
@@ -154,40 +156,60 @@ async def list_conversations(
     search: Optional[str] = Query(None),
     search_in_messages: bool = Query(False, description="Search in message content as well as titles"),
     sort_order: str = Query('newest', regex='^(newest|oldest)$'),
+    show_hidden: bool = Query(False, description="Include hidden conversations in results"),
     db: Session = Depends(get_db)
 ):
     """List all conversations with pagination and search"""
     try:
         query = db.query(ChatGPTConversation)
         
-        # Search by title or message content
-        if search:
+        # Filter out hidden conversations unless show_hidden is True
+        if not show_hidden:
+            # SQLite uses 0/1 for booleans, so check for False (0) or None
+            query = query.filter(
+                (ChatGPTConversation.is_hidden == False) | 
+                (ChatGPTConversation.is_hidden == None) |
+                (ChatGPTConversation.is_hidden == 0)
+            )
+        
+        # Search across all fields: conversation_id, message_id, title, message content
+        if search and search.strip():
+            from sqlalchemy import or_
+            search_term = search.strip()
+            
+            # Make search case-insensitive by using func.lower() for SQLite
+            # Get conversation IDs that match any of these criteria:
+            # 1. Conversation ID matches (case-insensitive)
+            conv_id_matches = [row[0] for row in db.query(ChatGPTConversation.conversation_id).filter(
+                func.lower(ChatGPTConversation.conversation_id).contains(search_term.lower())
+            ).all()]
+            
+            # 2. Conversation title matches (case-insensitive)
+            title_conv_ids = [row[0] for row in db.query(ChatGPTConversation.conversation_id).filter(
+                func.lower(ChatGPTConversation.title).contains(search_term.lower())
+            ).all()]
+            
+            # 3. Message ID matches (find conversations containing messages with matching IDs, case-insensitive)
+            message_id_conv_ids = [row[0] for row in db.query(ChatGPTMessage.conversation_id).filter(
+                func.lower(ChatGPTMessage.message_id).contains(search_term.lower())
+            ).distinct().all()]
+            
+            # 4. Message content matches (if search_in_messages is enabled, case-insensitive)
+            message_content_conv_ids = []
             if search_in_messages:
-                # Search in both conversation titles and message content
-                # Find conversation IDs that match title OR have messages matching search
-                from sqlalchemy import or_
-                
-                # Get conversation IDs with matching titles
-                title_conv_ids = [row[0] for row in db.query(ChatGPTConversation.conversation_id).filter(
-                    ChatGPTConversation.title.contains(search)
-                ).all()]
-                
-                # Get conversation IDs with matching message content
-                message_conv_ids = [row[0] for row in db.query(ChatGPTMessage.conversation_id).filter(
-                    ChatGPTMessage.content.contains(search)
+                message_content_conv_ids = [row[0] for row in db.query(ChatGPTMessage.conversation_id).filter(
+                    func.lower(ChatGPTMessage.content).contains(search_term.lower())
                 ).distinct().all()]
-                
-                # Combine both sets
-                all_conv_ids = list(set(title_conv_ids + message_conv_ids))
-                
-                if all_conv_ids:
-                    query = query.filter(ChatGPTConversation.conversation_id.in_(all_conv_ids))
-                else:
-                    # No matches, return empty result
-                    query = query.filter(ChatGPTConversation.conversation_id == '')
+            
+            # Combine all matching conversation IDs
+            all_conv_ids = list(set(conv_id_matches + title_conv_ids + message_id_conv_ids + message_content_conv_ids))
+            
+            if all_conv_ids:
+                query = query.filter(ChatGPTConversation.conversation_id.in_(all_conv_ids))
             else:
-                # Just search titles (default behavior)
-                query = query.filter(ChatGPTConversation.title.contains(search))
+                # No matches, return empty result by using an impossible condition
+                # Use a condition that will never be true to return 0 results
+                query = query.filter(ChatGPTConversation.conversation_id == '___NO_MATCHES___')
         
         # Get total count
         total = query.count()
@@ -202,12 +224,20 @@ async def list_conversations(
                 desc(ChatGPTConversation.update_time)
             ).offset((page - 1) * per_page).limit(per_page).all()
         
-        # Get message counts for each conversation
+        # Get message counts and date ranges for each conversation
         results = []
         for conv in conversations:
             msg_count = db.query(ChatGPTMessage).filter(
                 ChatGPTMessage.conversation_id == conv.conversation_id
             ).count()
+            
+            # Get date range (earliest and latest message dates)
+            date_range = db.query(
+                func.min(ChatGPTMessage.create_time).label('earliest'),
+                func.max(ChatGPTMessage.create_time).label('latest')
+            ).filter(
+                ChatGPTMessage.conversation_id == conv.conversation_id
+            ).first()
             
             results.append({
                 'conversation_id': conv.conversation_id,
@@ -218,7 +248,12 @@ async def list_conversations(
                 'model': conv.default_model_slug,
                 'is_archived': conv.is_archived,
                 'has_moderation_results': bool(conv.moderation_results),
-                'has_blocked_urls': bool(conv.blocked_urls)
+                'has_blocked_urls': bool(conv.blocked_urls),
+                'is_hidden': conv.is_hidden if hasattr(conv, 'is_hidden') else False,
+                'date_range': {
+                    'earliest': date_range.earliest if date_range else None,
+                    'latest': date_range.latest if date_range else None
+                }
             })
         
         return JSONResponse(content={
@@ -339,7 +374,8 @@ async def get_conversation(
                 'update_time': msg.update_time,
                 'status': msg.status,
                 'weight': msg.weight,
-                'message_type': msg.message_type
+                'message_type': msg.message_type,
+                'is_hidden': msg.is_hidden if hasattr(msg, 'is_hidden') else False
             }
             
             # Parse JSON fields
@@ -475,32 +511,32 @@ async def get_timeline(
             total_after = query.count()
             print(f"Total timeline items after filter: {total_after}")
         
-        # Filter by search term (in conversation titles and content)
-        if search:
-            # First, find matching conversation IDs by title
-            title_conv_ids = [row[0] for row in db.query(ChatGPTConversation.conversation_id).filter(
-                ChatGPTConversation.title.contains(search)
-            ).distinct().all()]
+        # Filter by search term (in timeline content and titles)
+        if search and search.strip():
+            search_term = search.strip()
+            from sqlalchemy import or_
             
-            # Find matching conversation IDs by message content
-            message_conv_ids = [row[0] for row in db.query(ChatGPTMessage.conversation_id).filter(
-                ChatGPTMessage.content.contains(search)
-            ).distinct().all()]
-            
-            # Find matching timeline items by content preview or title preview
-            timeline_conv_ids = [row[0] for row in db.query(ChatGPTTimeline.conversation_id).filter(
-                (ChatGPTTimeline.content_preview.contains(search)) | 
-                (ChatGPTTimeline.title_preview.contains(search))
+            # First, find message IDs that match the search term in their full content
+            # This is important because timeline content_preview is only first 500 chars
+            matching_message_ids = [row[0] for row in db.query(ChatGPTMessage.message_id).filter(
+                func.lower(ChatGPTMessage.content).contains(search_term.lower())
             ).distinct().all() if row[0]]
             
-            # Combine all matching conversation IDs
-            all_conv_ids = list(set(title_conv_ids + message_conv_ids + timeline_conv_ids))
+            # Build filter: timeline preview matches OR full message content matches
+            timeline_preview_filter = or_(
+                func.lower(ChatGPTTimeline.content_preview).contains(search_term.lower()),
+                func.lower(ChatGPTTimeline.title_preview).contains(search_term.lower())
+            )
             
-            if all_conv_ids:
-                query = query.filter(ChatGPTTimeline.conversation_id.in_(all_conv_ids))
+            if matching_message_ids:
+                # Include timeline items where preview matches OR message_id matches a message with full content match
+                query = query.filter(
+                    timeline_preview_filter |
+                    ChatGPTTimeline.message_id.in_(matching_message_ids)
+                )
             else:
-                # No matches, return empty result
-                query = query.filter(ChatGPTTimeline.conversation_id == '')
+                # Only filter by timeline preview if no full message matches
+                query = query.filter(timeline_preview_filter)
         
         # Get total count
         total = query.count()
@@ -697,6 +733,174 @@ async def import_html_files(db: Session = Depends(get_db)):
             'results': results,
             'error_details': results.get('errors', [])
         })
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+        )
+
+
+@router.post("/import/file")
+async def import_single_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Import a single file (JSON or HTML)"""
+    try:
+        # Read file content
+        content = await file.read()
+        filename = file.filename or 'unknown'
+        
+        # Determine file type
+        is_html = filename.lower().endswith('.html') or filename.lower().endswith('.htm')
+        is_json = filename.lower().endswith('.json')
+        
+        if not (is_html or is_json):
+            raise HTTPException(status_code=400, detail="File must be .json or .html")
+        
+        # Create temporary file to save uploaded content
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix=os.path.splitext(filename)[1]) as tmp_file:
+            tmp_file.write(content)
+            tmp_file_path = tmp_file.name
+        
+        try:
+            if is_html:
+                # Import HTML file
+                from .html_import import HTMLImportService
+                import shutil
+                import uuid
+                
+                service = HTMLImportService()
+                
+                # Copy temp file to HTMLS folder temporarily (HTML import expects files in HTMLS folder)
+                # Use a unique temporary filename to avoid conflicts
+                project_root = os.path.dirname(os.path.dirname(__file__))
+                htmls_folder = os.path.join(project_root, 'chatlog', 'HTMLS')
+                os.makedirs(htmls_folder, exist_ok=True)
+                
+                # Create unique temp filename
+                temp_filename = f"temp_{uuid.uuid4().hex[:8]}_{filename}"
+                temp_html_path = os.path.join(htmls_folder, temp_filename)
+                shutil.copy2(tmp_file_path, temp_html_path)
+                
+                try:
+                    result = service.import_html_file(
+                        db,
+                        temp_filename,
+                        subfolder='',
+                        relative_path=temp_filename
+                    )
+                finally:
+                    # Clean up temp file in HTMLS folder
+                    if os.path.exists(temp_html_path):
+                        os.remove(temp_html_path)
+                
+                return JSONResponse(content={
+                    'success': True,
+                    'filename': filename,
+                    'file_type': 'html',
+                    'conversations': result.get('conversations', 0),
+                    'messages': result.get('messages', 0),
+                    'reason': result.get('reason'),
+                    'message': f"Imported {result.get('conversations', 0)} conversation(s) and {result.get('messages', 0)} message(s)"
+                })
+            
+            else:
+                # Import JSON file
+                # Detect JSON file type by filename
+                filename_lower = filename.lower()
+                
+                if 'conversation' in filename_lower:
+                    # conversations.json - import conversations
+                    result = import_service._import_conversations(db, tmp_file_path, f"uploaded_{filename}")
+                    return JSONResponse(content={
+                        'success': True,
+                        'filename': filename,
+                        'file_type': 'conversations_json',
+                        'conversations': result.get('count', 0),
+                        'messages': result.get('messages', 0),
+                        'message': f"Imported {result.get('count', 0)} conversation(s) and {result.get('messages', 0)} message(s)"
+                    })
+                
+                elif 'feedback' in filename_lower:
+                    # message_feedback.json - import feedback
+                    result = import_service._import_feedback(db, tmp_file_path)
+                    return JSONResponse(content={
+                        'success': True,
+                        'filename': filename,
+                        'file_type': 'feedback_json',
+                        'feedback': result.get('count', 0),
+                        'message': f"Imported {result.get('count', 0)} feedback record(s)"
+                    })
+                
+                elif 'comparison' in filename_lower:
+                    # model_comparisons.json - import comparisons
+                    result = import_service._import_comparisons(db, tmp_file_path)
+                    return JSONResponse(content={
+                        'success': True,
+                        'filename': filename,
+                        'file_type': 'comparisons_json',
+                        'comparisons': result.get('count', 0),
+                        'message': f"Imported {result.get('count', 0)} comparison(s)"
+                    })
+                
+                elif 'user' in filename_lower:
+                    # user.json - import user
+                    import_service._import_user(db, tmp_file_path, f"uploaded_{filename}")
+                    return JSONResponse(content={
+                        'success': True,
+                        'filename': filename,
+                        'file_type': 'user_json',
+                        'message': "Imported user data"
+                    })
+                
+                else:
+                    # Try to auto-detect by parsing JSON structure
+                    with open(tmp_file_path, 'r', encoding='utf-8') as f:
+                        json_data = json.load(f)
+                    
+                    # Check if it's a conversations array
+                    if isinstance(json_data, list) and len(json_data) > 0:
+                        first_item = json_data[0]
+                        if 'conversation_id' in first_item and 'mapping' in first_item:
+                            # Looks like conversations.json
+                            result = import_service._import_conversations(db, tmp_file_path, f"uploaded_{filename}")
+                            return JSONResponse(content={
+                                'success': True,
+                                'filename': filename,
+                                'file_type': 'conversations_json',
+                                'conversations': result.get('count', 0),
+                                'messages': result.get('messages', 0),
+                                'message': f"Auto-detected and imported {result.get('count', 0)} conversation(s) and {result.get('messages', 0)} message(s)"
+                            })
+                        elif 'id' in first_item and ('rating' in first_item or 'message_id' in first_item):
+                            # Looks like feedback
+                            result = import_service._import_feedback(db, tmp_file_path)
+                            return JSONResponse(content={
+                                'success': True,
+                                'filename': filename,
+                                'file_type': 'feedback_json',
+                                'feedback': result.get('count', 0),
+                                'message': f"Auto-detected and imported {result.get('count', 0)} feedback record(s)"
+                            })
+                    
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Could not determine JSON file type. Supported types: conversations.json, message_feedback.json, model_comparisons.json, user.json"
+                    )
+        
+        finally:
+            # Clean up temporary file
+            if os.path.exists(tmp_file_path):
+                os.remove(tmp_file_path)
+    
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         return JSONResponse(
@@ -1027,6 +1231,145 @@ async def get_ttl_auth(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/messages/{message_id}/hidden")
+async def update_message_hidden(
+    message_id: str,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Update the hidden status of a message"""
+    try:
+        body = await request.json()
+        is_hidden = body.get('is_hidden', False)
+        
+        message = db.query(ChatGPTMessage).filter(
+            ChatGPTMessage.message_id == message_id
+        ).first()
+        
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+        
+        message.is_hidden = is_hidden
+        db.commit()
+        
+        return JSONResponse(content={
+            'success': True,
+            'message_id': message_id,
+            'is_hidden': is_hidden
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/conversations/{conversation_id}/hidden")
+async def update_conversation_hidden(
+    conversation_id: str,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Update the hidden status of a conversation"""
+    try:
+        body = await request.json()
+        is_hidden = body.get('is_hidden', False)
+        
+        conversation = db.query(ChatGPTConversation).filter(
+            ChatGPTConversation.conversation_id == conversation_id
+        ).first()
+        
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        conversation.is_hidden = is_hidden
+        db.commit()
+        
+        return JSONResponse(content={
+            'success': True,
+            'conversation_id': conversation_id,
+            'is_hidden': is_hidden
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    db: Session = Depends(get_db)
+):
+    """Delete a conversation and all its related data (messages, feedback, timeline entries, comparisons)"""
+    try:
+        # Check if conversation exists
+        conversation = db.query(ChatGPTConversation).filter(
+            ChatGPTConversation.conversation_id == conversation_id
+        ).first()
+        
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Count related data before deletion
+        message_count = db.query(ChatGPTMessage).filter(
+            ChatGPTMessage.conversation_id == conversation_id
+        ).count()
+        
+        feedback_count = db.query(ChatGPTMessageFeedback).filter(
+            ChatGPTMessageFeedback.conversation_id == conversation_id
+        ).count()
+        
+        timeline_count = db.query(ChatGPTTimeline).filter(
+            ChatGPTTimeline.conversation_id == conversation_id
+        ).count()
+        
+        comparison_count = db.query(ChatGPTModelComparison).filter(
+            ChatGPTModelComparison.conversation_id == conversation_id
+        ).count()
+        
+        # Delete all related data
+        db.query(ChatGPTMessage).filter(
+            ChatGPTMessage.conversation_id == conversation_id
+        ).delete()
+        
+        db.query(ChatGPTMessageFeedback).filter(
+            ChatGPTMessageFeedback.conversation_id == conversation_id
+        ).delete()
+        
+        db.query(ChatGPTTimeline).filter(
+            ChatGPTTimeline.conversation_id == conversation_id
+        ).delete()
+        
+        db.query(ChatGPTModelComparison).filter(
+            ChatGPTModelComparison.conversation_id == conversation_id
+        ).delete()
+        
+        # Delete the conversation itself
+        db.delete(conversation)
+        
+        db.commit()
+        
+        return JSONResponse(content={
+            'success': True,
+            'conversation_id': conversation_id,
+            'title': conversation.title,
+            'deleted': {
+                'messages': message_count,
+                'feedback': feedback_count,
+                'timeline_entries': timeline_count,
+                'comparisons': comparison_count
+            },
+            'message': f'Deleted conversation "{conversation.title}" and {message_count} message(s), {feedback_count} feedback record(s), {timeline_count} timeline entry/entries, and {comparison_count} comparison(s)'
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/stats")
 async def get_stats(db: Session = Depends(get_db)):
     """Get statistics"""
@@ -1060,4 +1403,220 @@ async def get_stats(db: Session = Depends(get_db)):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug/database")
+async def debug_database(db: Session = Depends(get_db)):
+    """Debug endpoint to check database connection and contents"""
+    import os
+    from sqlalchemy import inspect, text
+    
+    try:
+        # Get database path from the engine (use existing db_service instance)
+        db_path = db_service.engine.url.database
+        db_file_exists = os.path.exists(db_path) if db_path else False
+        db_file_size = os.path.getsize(db_path) if db_file_exists else 0
+        
+        # Get table names
+        inspector = inspect(db_service.engine)
+        table_names = inspector.get_table_names()
+        
+        # Count records in each table
+        table_counts = {}
+        for table_name in table_names:
+            try:
+                result = db.query(text(f"SELECT COUNT(*) as count FROM {table_name}")).first()
+                table_counts[table_name] = result[0] if result else 0
+            except Exception as e:
+                table_counts[table_name] = f"Error: {str(e)}"
+        
+        # Get sample records from key tables
+        sample_conversations = db.query(ChatGPTConversation).limit(3).all()
+        sample_messages = db.query(ChatGPTMessage).limit(3).all()
+        
+        # Check if tables exist
+        tables_exist = {
+            'chatgpt_conversations': inspector.has_table('chatgpt_conversations'),
+            'chatgpt_messages': inspector.has_table('chatgpt_messages'),
+            'chatgpt_message_feedback': inspector.has_table('chatgpt_message_feedback'),
+            'chatgpt_timeline': inspector.has_table('chatgpt_timeline'),
+        }
+        
+        return JSONResponse(content={
+            'success': True,
+            'database_path': db_path,
+            'database_file_exists': db_file_exists,
+            'database_file_size_mb': round(db_file_size / (1024 * 1024), 2) if db_file_exists else 0,
+            'tables_found': table_names,
+            'tables_exist': tables_exist,
+            'table_counts': table_counts,
+            'sample_conversations': [
+                {
+                    'conversation_id': c.conversation_id,
+                    'title': c.title,
+                    'create_time': c.create_time
+                } for c in sample_conversations
+            ],
+            'sample_messages': [
+                {
+                    'message_id': m.message_id,
+                    'conversation_id': m.conversation_id,
+                    'role': m.role,
+                    'content_preview': (m.content or '')[:100] if m.content else None
+                } for m in sample_messages
+            ],
+            'connection_string': str(db_service.engine.url)
+        })
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+        )
+
+
+@router.post("/cleanup/html-messages")
+async def cleanup_html_messages(
+    db: Session = Depends(get_db)
+):
+    """
+    Remove HTML export messages that have JSON counterparts (same message_id).
+    Keep HTML messages that don't have JSON versions (merge strategy).
+    """
+    try:
+        # Find all messages from HTML export
+        html_messages = db.query(ChatGPTMessage).filter(
+            ChatGPTMessage.raw_data.contains('"source": "html_export"')
+        ).all()
+        
+        removed_count = 0
+        kept_count = 0
+        conversations_affected = set()
+        
+        for html_msg in html_messages:
+            # Check if there's a JSON message with the same message_id in the same conversation
+            json_msg = db.query(ChatGPTMessage).filter(
+                ChatGPTMessage.conversation_id == html_msg.conversation_id,
+                ChatGPTMessage.message_id == html_msg.message_id,
+                ~ChatGPTMessage.raw_data.contains('"source": "html_export"')
+            ).first()
+            
+            if json_msg:
+                # JSON version exists - remove HTML duplicate
+                conversations_affected.add(html_msg.conversation_id)
+                db.delete(html_msg)
+                removed_count += 1
+            else:
+                # No JSON version - keep HTML message (it's unique)
+                kept_count += 1
+        
+        db.commit()
+        
+        return JSONResponse(content={
+            'success': True,
+            'html_messages_removed': removed_count,
+            'html_messages_kept': kept_count,
+            'conversations_affected': len(conversations_affected),
+            'message': f'Removed {removed_count} duplicate HTML messages. Kept {kept_count} unique HTML messages that have no JSON counterpart.'
+        })
+    except Exception as e:
+        db.rollback()
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+        )
+
+
+@router.get("/debug/search-messages")
+async def debug_search_messages(
+    search: str = Query(..., description="Search term to find in message content"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of results to return"),
+    db: Session = Depends(get_db)
+):
+    """Debug endpoint to search for specific text in message content"""
+    try:
+        search_term = search.strip().lower()
+        
+        # Search in message content (case-insensitive)
+        messages = db.query(ChatGPTMessage).filter(
+            func.lower(ChatGPTMessage.content).contains(search_term)
+        ).limit(limit).all()
+        
+        # Also check timeline
+        timeline_items = db.query(ChatGPTTimeline).filter(
+            func.lower(ChatGPTTimeline.content_preview).contains(search_term)
+        ).limit(limit).all()
+        
+        # Get conversation info for messages
+        results = []
+        for msg in messages:
+            conv = db.query(ChatGPTConversation).filter(
+                ChatGPTConversation.conversation_id == msg.conversation_id
+            ).first()
+            
+            # Find the position of the search term in the content
+            content_lower = (msg.content or '').lower()
+            search_pos = content_lower.find(search_term)
+            preview_start = max(0, search_pos - 50)
+            preview_end = min(len(msg.content or ''), search_pos + len(search_term) + 50)
+            preview = (msg.content or '')[preview_start:preview_end] if msg.content else ''
+            
+            results.append({
+                'type': 'message',
+                'message_id': msg.message_id,
+                'conversation_id': msg.conversation_id,
+                'conversation_title': conv.title if conv else 'Unknown',
+                'role': msg.role,
+                'create_time': msg.create_time,
+                'content_preview': preview,
+                'full_content_length': len(msg.content or ''),
+                'search_term_position': search_pos if search_pos >= 0 else None
+            })
+        
+        timeline_results = []
+        for item in timeline_items:
+            conv = db.query(ChatGPTConversation).filter(
+                ChatGPTConversation.conversation_id == item.conversation_id
+            ).first()
+            
+            timeline_results.append({
+                'type': 'timeline',
+                'timeline_id': item.id,
+                'message_id': item.message_id,
+                'conversation_id': item.conversation_id,
+                'conversation_title': conv.title if conv else 'Unknown',
+                'event_type': item.event_type,
+                'timestamp': item.timestamp,
+                'content_preview': item.content_preview[:200] if item.content_preview else '',
+                'preview_length': len(item.content_preview or '')
+            })
+        
+        return JSONResponse(content={
+            'success': True,
+            'search_term': search,
+            'message_count': len(results),
+            'timeline_count': len(timeline_results),
+            'messages': results,
+            'timeline_items': timeline_results,
+            'note': 'This searches the full message content. If no results, the message may not be in the database.'
+        })
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={
+                'success': False,
+                'error': str(e),
+                'traceback': traceback.format_exc()
+            }
+        )
 

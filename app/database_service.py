@@ -68,6 +68,40 @@ class ChatGPTDatabaseService:
                 # If table doesn't exist yet or columns already exist, that's fine
                 pass
             
+            # Add is_hidden column to chatgpt_messages table if it doesn't exist
+            try:
+                from sqlalchemy import inspect, text
+                inspector = inspect(self.engine)
+                if inspector.has_table('chatgpt_messages'):
+                    columns = [col['name'] for col in inspector.get_columns('chatgpt_messages')]
+                    
+                    with self.engine.connect() as conn:
+                        if 'is_hidden' not in columns:
+                            conn.execute(text('ALTER TABLE chatgpt_messages ADD COLUMN is_hidden BOOLEAN DEFAULT 0'))
+                            # Create index for better query performance
+                            conn.execute(text('CREATE INDEX IF NOT EXISTS idx_chatgpt_messages_is_hidden ON chatgpt_messages(is_hidden)'))
+                            conn.commit()
+            except Exception as e:
+                # If table doesn't exist yet or column already exists, that's fine
+                pass
+            
+            # Add is_hidden column to chatgpt_conversations table if it doesn't exist
+            try:
+                from sqlalchemy import inspect, text
+                inspector = inspect(self.engine)
+                if inspector.has_table('chatgpt_conversations'):
+                    columns = [col['name'] for col in inspector.get_columns('chatgpt_conversations')]
+                    
+                    with self.engine.connect() as conn:
+                        if 'is_hidden' not in columns:
+                            conn.execute(text('ALTER TABLE chatgpt_conversations ADD COLUMN is_hidden BOOLEAN DEFAULT 0'))
+                            # Create index for better query performance
+                            conn.execute(text('CREATE INDEX IF NOT EXISTS idx_chatgpt_conversations_is_hidden ON chatgpt_conversations(is_hidden)'))
+                            conn.commit()
+            except Exception as e:
+                # If table doesn't exist yet or column already exists, that's fine
+                pass
+            
             print(f"Database initialized: {self.database_url}")
         except SQLAlchemyError as e:
             print(f"Error initializing database: {e}")

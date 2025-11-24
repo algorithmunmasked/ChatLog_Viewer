@@ -270,71 +270,100 @@ class ChatGPTImportService:
                 continue
             
             # Check if conversation already exists
-            existing = db.query(ChatGPTConversation).filter(
+            existing_conv = db.query(ChatGPTConversation).filter(
                 ChatGPTConversation.conversation_id == conversation_id
             ).first()
             
-            if existing:
-                continue
+            is_new_conversation = existing_conv is None
             
-            # Extract all fields
-            conversation = ChatGPTConversation(
-                conversation_id=conversation_id,
-                title=conv_data.get('title'),
-                create_time=conv_data.get('create_time'),
-                update_time=conv_data.get('update_time'),
-                current_node=conv_data.get('current_node'),
-                gizmo_id=conv_data.get('gizmo_id'),
-                gizmo_type=conv_data.get('gizmo_type'),
-                default_model_slug=conv_data.get('default_model_slug'),
-                conversation_template_id=conv_data.get('conversation_template_id'),
-                is_archived=conv_data.get('is_archived', False),
-                is_starred=conv_data.get('is_starred'),
-                conversation_origin=conv_data.get('conversation_origin'),
-                voice=conv_data.get('voice'),
-                async_status=conv_data.get('async_status'),
-                workspace_id=conv_data.get('workspace_id'),
-                export_folder=folder_name,
-                raw_data=json.dumps(conv_data)
-            )
+            if is_new_conversation:
+                # Create new conversation
+                conversation = ChatGPTConversation(
+                    conversation_id=conversation_id,
+                    title=conv_data.get('title'),
+                    create_time=conv_data.get('create_time'),
+                    update_time=conv_data.get('update_time'),
+                    current_node=conv_data.get('current_node'),
+                    gizmo_id=conv_data.get('gizmo_id'),
+                    gizmo_type=conv_data.get('gizmo_type'),
+                    default_model_slug=conv_data.get('default_model_slug'),
+                    conversation_template_id=conv_data.get('conversation_template_id'),
+                    is_archived=conv_data.get('is_archived', False),
+                    is_starred=conv_data.get('is_starred'),
+                    conversation_origin=conv_data.get('conversation_origin'),
+                    voice=conv_data.get('voice'),
+                    async_status=conv_data.get('async_status'),
+                    workspace_id=conv_data.get('workspace_id'),
+                    export_folder=folder_name,
+                    raw_data=json.dumps(conv_data)
+                )
+                
+                # Store arrays as JSON strings
+                if conv_data.get('plugin_ids'):
+                    conversation.plugin_ids = json.dumps(conv_data['plugin_ids'])
+                if conv_data.get('safe_urls'):
+                    conversation.safe_urls = json.dumps(conv_data['safe_urls'])
+                if conv_data.get('blocked_urls'):
+                    conversation.blocked_urls = json.dumps(conv_data['blocked_urls'])
+                if conv_data.get('disabled_tool_ids'):
+                    conversation.disabled_tool_ids = json.dumps(conv_data['disabled_tool_ids'])
+                if conv_data.get('moderation_results'):
+                    conversation.moderation_results = json.dumps(conv_data['moderation_results'])
+                
+                db.add(conversation)
+                db.flush()
+                
+                # Add to timeline for new conversation
+                if conversation.create_time:
+                    timeline_entry = ChatGPTTimeline(
+                        timestamp=conversation.create_time,
+                        event_type='conversation_created',
+                        conversation_id=conversation_id,
+                        title_preview=conversation.title or 'Untitled',
+                        content_preview='',
+                        timeline_metadata=json.dumps({'folder': folder_name})
+                    )
+                    db.add(timeline_entry)
+                
+                count += 1
+            else:
+                # Update existing conversation metadata (update_time, title, etc.)
+                # Only update if the new data is more recent or different
+                if conv_data.get('update_time') and (not existing_conv.update_time or conv_data.get('update_time') > existing_conv.update_time):
+                    existing_conv.update_time = conv_data.get('update_time')
+                if conv_data.get('title') and conv_data.get('title') != existing_conv.title:
+                    existing_conv.title = conv_data.get('title')
+                if conv_data.get('current_node'):
+                    existing_conv.current_node = conv_data.get('current_node')
+                if conv_data.get('is_archived') is not None:
+                    existing_conv.is_archived = conv_data.get('is_archived')
+                if conv_data.get('is_starred') is not None:
+                    existing_conv.is_starred = conv_data.get('is_starred')
+                db.flush()
             
-            # Store arrays as JSON strings
-            if conv_data.get('plugin_ids'):
-                conversation.plugin_ids = json.dumps(conv_data['plugin_ids'])
-            if conv_data.get('safe_urls'):
-                conversation.safe_urls = json.dumps(conv_data['safe_urls'])
-            if conv_data.get('blocked_urls'):
-                conversation.blocked_urls = json.dumps(conv_data['blocked_urls'])
-            if conv_data.get('disabled_tool_ids'):
-                conversation.disabled_tool_ids = json.dumps(conv_data['disabled_tool_ids'])
-            if conv_data.get('moderation_results'):
-                conversation.moderation_results = json.dumps(conv_data['moderation_results'])
-            
-            db.add(conversation)
-            db.flush()
-            
-            # Import messages from mapping
+            # Import messages from mapping - check each message by message_id
             messages = self._extract_messages(conv_data.get('mapping', {}), conversation_id)
             for msg_data in messages:
+                message_id = msg_data.get('message_id') or msg_data.get('id')
+                if not message_id:
+                    continue
+                
+                # Check if message already exists
+                existing_msg = db.query(ChatGPTMessage).filter(
+                    ChatGPTMessage.message_id == message_id,
+                    ChatGPTMessage.conversation_id == conversation_id
+                ).first()
+                
+                if existing_msg:
+                    # Message already exists, skip it
+                    continue
+                
+                # Create new message
                 message, timeline_entry = self._create_message(msg_data, conversation_id)
                 db.add(message)
                 if timeline_entry:
                     db.add(timeline_entry)
                 message_count += 1
-            
-            # Add to timeline
-            if conversation.create_time:
-                timeline_entry = ChatGPTTimeline(
-                    timestamp=conversation.create_time,
-                    event_type='conversation_created',
-                    conversation_id=conversation_id,
-                    title_preview=conversation.title or 'Untitled',
-                    content_preview='',
-                    timeline_metadata=json.dumps({'folder': folder_name})
-                )
-                db.add(timeline_entry)
-            
-            count += 1
         
         db.commit()
         return {'count': count, 'messages': message_count}

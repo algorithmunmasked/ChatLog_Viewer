@@ -49,6 +49,7 @@ class ChatGPTConversation(Base):
     is_archived = Column(Boolean, default=False)
     is_starred = Column(Boolean)
     conversation_origin = Column(String(255))
+    is_hidden = Column(Boolean, default=False, index=True)  # User can hide conversations they've reviewed
     
     # Audio/async
     voice = Column(String(255))
@@ -110,6 +111,9 @@ class ChatGPTMessage(Base):
     # Complete raw message object
     raw_data = Column(Text)  # Complete message object as JSON string
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # User preferences
+    is_hidden = Column(Boolean, default=False, index=True)  # User can hide messages they've reviewed
 
 
 class ChatGPTMessageFeedback(Base):

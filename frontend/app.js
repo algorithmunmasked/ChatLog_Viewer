@@ -10,8 +10,9 @@ let timelineStartDate = null;
 let timelineEndDate = null;
 let timelineSortOrder = 'newest';
 let conversationsSortOrder = 'newest';
-let searchInMessages = false;
+let searchInMessages = true; // Default to searching in messages for comprehensive search
 let timelineSearch = '';
+let showHiddenConversations = false;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', function() {
@@ -37,6 +38,10 @@ function setupEventListeners() {
     // Search
     const searchInput = document.getElementById('search-input');
     const searchInMessagesCheckbox = document.getElementById('search-in-messages');
+    // Set default to checked for comprehensive search
+    if (searchInMessagesCheckbox) {
+        searchInMessagesCheckbox.checked = true;
+    }
     let searchTimeout;
     searchInput.addEventListener('input', (e) => {
         clearTimeout(searchTimeout);
@@ -51,6 +56,16 @@ function setupEventListeners() {
         currentPage = 1;
         loadConversations();
     });
+    
+    // Show hidden conversations checkbox
+    const showHiddenCheckbox = document.getElementById('show-hidden-conversations');
+    if (showHiddenCheckbox) {
+        showHiddenCheckbox.addEventListener('change', (e) => {
+            showHiddenConversations = e.target.checked;
+            currentPage = 1;
+            loadConversations();
+        });
+    }
     
     // Conversations sort order
     document.getElementById('conversations-sort-order').addEventListener('change', (e) => {
@@ -241,6 +256,99 @@ function setupEventListeners() {
             button.textContent = 'Import HTML Files';
         }
     });
+    
+    // Single File Import
+    document.getElementById('import-single-file').addEventListener('change', async (e) => {
+        const fileInput = e.target;
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            return;
+        }
+        
+        // Validate file type
+        const fileName = file.name.toLowerCase();
+        const isJson = fileName.endsWith('.json');
+        const isHtml = fileName.endsWith('.html') || fileName.endsWith('.htm');
+        
+        if (!isJson && !isHtml) {
+            alert('Please select a .json or .html file');
+            fileInput.value = ''; // Reset file input
+            return;
+        }
+        
+        // Show loading state
+        const label = document.querySelector('label[for="import-single-file"]');
+        const originalText = label.textContent;
+        label.textContent = 'Importing...';
+        label.style.opacity = '0.6';
+        label.style.cursor = 'not-allowed';
+        fileInput.disabled = true;
+        
+        try {
+            // Create FormData for file upload
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const response = await fetch('/api/chatgpt-viewer/import/file', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                let message = `File Import Complete!\n\nFile: ${data.filename}\nType: ${data.file_type}`;
+                
+                if (data.conversations !== undefined) {
+                    message += `\nConversations: ${data.conversations}`;
+                }
+                if (data.messages !== undefined) {
+                    message += `\nMessages: ${data.messages}`;
+                }
+                if (data.feedback !== undefined) {
+                    message += `\nFeedback: ${data.feedback}`;
+                }
+                if (data.comparisons !== undefined) {
+                    message += `\nComparisons: ${data.comparisons}`;
+                }
+                
+                if (data.reason === 'already_exists') {
+                    message += '\n\nNote: This file was already imported (skipped duplicates)';
+                }
+                
+                if (data.message) {
+                    message += `\n\n${data.message}`;
+                }
+                
+                alert(message);
+                
+                // Refresh stats and current view
+                loadStats();
+                if (currentView === 'list') {
+                    loadConversations();
+                } else if (currentView === 'timeline') {
+                    loadTimeline();
+                }
+            } else {
+                let errorMsg = `Error importing file: ${data.error || 'Unknown error'}`;
+                if (data.traceback) {
+                    errorMsg += `\n\nDetails:\n${data.traceback}`;
+                }
+                alert(errorMsg);
+            }
+        } catch (error) {
+            console.error('Error importing file:', error);
+            alert('Error importing file: ' + error.message);
+        } finally {
+            // Reset UI
+            label.textContent = originalText;
+            label.style.opacity = '1';
+            label.style.cursor = 'pointer';
+            fileInput.disabled = false;
+            fileInput.value = ''; // Reset file input
+        }
+    });
     document.getElementById('refreshBtn').addEventListener('click', () => {
         loadStats();
         if (currentView === 'list') {
@@ -251,6 +359,50 @@ function setupEventListeners() {
             loadTTLSessions();
         } else if (currentView === 'filtered') {
             loadFilteredMessages();
+        }
+    });
+    
+    // Cleanup HTML Messages button
+    document.getElementById('cleanup-html-messages').addEventListener('click', async () => {
+        if (!confirm('This will remove duplicate HTML messages that have JSON counterparts (same message_id). HTML messages without JSON versions will be kept. This cannot be undone. Continue?')) {
+            return;
+        }
+        
+        const button = document.getElementById('cleanup-html-messages');
+        button.disabled = true;
+        button.textContent = 'Cleaning up...';
+        
+        try {
+            const response = await fetch('/api/chatgpt-viewer/cleanup/html-messages', {
+                method: 'POST'
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                let message = `Cleanup Complete!\n\nRemoved ${data.html_messages_removed} duplicate HTML message(s) from ${data.conversations_affected} conversation(s)`;
+                if (data.html_messages_kept > 0) {
+                    message += `\nKept ${data.html_messages_kept} unique HTML message(s) that have no JSON counterpart`;
+                }
+                alert(message);
+                loadStats();
+                if (currentView === 'list') {
+                    loadConversations();
+                } else if (currentView === 'timeline') {
+                    loadTimeline();
+                }
+            } else {
+                let errorMsg = `Error during cleanup: ${data.error || 'Unknown error'}`;
+                if (data.traceback) {
+                    errorMsg += `\n\nDetails:\n${data.traceback}`;
+                }
+                alert(errorMsg);
+            }
+        } catch (error) {
+            console.error('Error cleaning up HTML messages:', error);
+            alert('Error cleaning up HTML messages: ' + error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Cleanup HTML Messages';
         }
     });
     
@@ -328,7 +480,7 @@ async function loadStats() {
 
 async function loadConversations() {
     try {
-        const search = document.getElementById('search-input').value;
+        const search = document.getElementById('search-input').value.trim();
         const params = new URLSearchParams({
             page: currentPage,
             per_page: pageSize,
@@ -339,6 +491,9 @@ async function loadConversations() {
             if (searchInMessages) {
                 params.append('search_in_messages', 'true');
             }
+        }
+        if (showHiddenConversations) {
+            params.append('show_hidden', 'true');
         }
         
         const response = await fetch(`/api/chatgpt-viewer/conversations?${params}`);
@@ -358,6 +513,42 @@ async function loadConversations() {
 let selectedConversations = new Set();
 let selectedMessages = new Set();
 
+// Hidden messages management (stored in database via API)
+async function updateMessageHiddenStatus(messageId, isHidden) {
+    try {
+        const response = await fetch(`/api/chatgpt-viewer/messages/${messageId}/hidden`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ is_hidden: isHidden })
+        });
+        
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || 'Failed to update hidden status');
+        }
+        
+        return await response.json();
+    } catch (error) {
+        console.error('Error updating message hidden status:', error);
+        throw error;
+    }
+}
+
+// Helper to get hidden messages from conversation data
+function getHiddenMessagesFromConversation(conversation) {
+    const hidden = new Set();
+    if (conversation.messages) {
+        conversation.messages.forEach(msg => {
+            if (msg.is_hidden) {
+                hidden.add(msg.message_id);
+            }
+        });
+    }
+    return hidden;
+}
+
 function displayConversations(conversations) {
     const container = document.getElementById('conversations-list');
     
@@ -374,18 +565,19 @@ function displayConversations(conversations) {
                         <input type="checkbox" id="select-all" class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
                                onchange="window.toggleSelectAll(this.checked)">
                     </th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hide</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date Range</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Messages</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
                 ${conversations.map(conv => {
                     const isSelected = selectedConversations.has(conv.conversation_id);
+                    const isHidden = conv.is_hidden || false;
                     return `
-                    <tr class="hover:bg-gray-50">
+                    <tr class="hover:bg-gray-50 ${isHidden ? 'opacity-60' : ''}">
                         <td class="px-6 py-4 whitespace-nowrap">
                             <input type="checkbox" class="conversation-checkbox w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
                                    value="${conv.conversation_id}" 
@@ -393,20 +585,29 @@ function displayConversations(conversations) {
                                    onchange="window.toggleConversationSelection('${conv.conversation_id}', this.checked)">
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="text-sm font-medium text-gray-900">${escapeHtml(conv.title || 'Untitled')}</div>
+                            <label class="flex items-center space-x-1 text-xs text-gray-600 cursor-pointer">
+                                <input type="checkbox" class="hide-conversation-checkbox w-4 h-4 rounded border-gray-300 text-orange-600 focus:ring-orange-500 cursor-pointer" 
+                                       ${isHidden ? 'checked' : ''}
+                                       onchange="window.toggleConversationHidden('${conv.conversation_id}', this.checked).catch(err => console.error(err))">
+                                <span class="sr-only">Hide</span>
+                            </label>
+                        </td>
+                        <td class="px-6 py-4 max-w-md">
+                            <button onclick="viewConversation('${conv.conversation_id}')" 
+                                    class="text-sm font-medium text-blue-600 hover:text-blue-900 hover:underline text-left break-words">
+                                ${escapeHtml(conv.title || 'Untitled')}
+                            </button>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            ${formatTimestamp(conv.create_time)}
+                            ${conv.date_range && conv.date_range.earliest && conv.date_range.latest ? 
+                                `${formatDateOnly(conv.date_range.earliest)} - ${formatDateOnly(conv.date_range.latest)}` : 
+                                'N/A'}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             ${conv.message_count}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             ${escapeHtml(conv.model || 'N/A')}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                            <button onclick="viewConversation('${conv.conversation_id}')" 
-                                    class="text-blue-600 hover:text-blue-900">View</button>
                         </td>
                     </tr>
                 `}).join('')}
@@ -440,11 +641,55 @@ function toggleConversationSelection(conversationId, checked) {
     }
 }
 
+// Conversation hide functionality
+async function updateConversationHiddenStatus(conversationId, isHidden) {
+    try {
+        const response = await fetch(`/api/chatgpt-viewer/conversations/${conversationId}/hidden`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ is_hidden: isHidden })
+        });
+        
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || 'Failed to update hidden status');
+        }
+        
+        return await response.json();
+    } catch (error) {
+        console.error('Error updating conversation hidden status:', error);
+        throw error;
+    }
+}
+
+async function toggleConversationHidden(conversationId, isHidden) {
+    try {
+        await updateConversationHiddenStatus(conversationId, isHidden);
+        
+        // Reload conversations to reflect the change
+        loadConversations();
+    } catch (error) {
+        console.error('Error toggling conversation hidden status:', error);
+        alert('Failed to update conversation hidden status. Please try again.');
+        // Reload to revert checkbox state
+        loadConversations();
+    }
+}
+
 window.toggleSelectAll = toggleSelectAll;
 window.toggleConversationSelection = toggleConversationSelection;
+window.toggleConversationHidden = toggleConversationHidden;
 
 async function loadTimeline() {
     try {
+        // Always read current values from the input fields to ensure they're up to date
+        const startDateInput = document.getElementById('timeline-start-date');
+        const endDateInput = document.getElementById('timeline-end-date');
+        const currentStartDate = startDateInput ? startDateInput.value : null;
+        const currentEndDate = endDateInput ? endDateInput.value : null;
+        
         const params = new URLSearchParams({
             page: currentTimelinePage,
             per_page: timelinePageSize,
@@ -453,27 +698,26 @@ async function loadTimeline() {
         if (timelineEventType) {
             params.append('event_type', timelineEventType);
         }
-        if (timelineStartDate) {
+        if (currentStartDate) {
             // Convert datetime-local to Unix timestamp
             // datetime-local gives us a string like "2025-05-05T22:00" in LOCAL time
             // JavaScript Date interprets this as local time, and getTime() returns UTC milliseconds
-            // So we need to account for timezone offset
-            const startDate = new Date(timelineStartDate);
-            // getTime() already gives UTC milliseconds, divide by 1000 for seconds
-            const startTimestamp = startDate.getTime() / 1000;
+            const startDate = new Date(currentStartDate);
+            // getTime() returns UTC milliseconds since epoch, divide by 1000 for seconds
+            const startTimestamp = Math.floor(startDate.getTime() / 1000);
             params.append('start_time', startTimestamp);
-            console.log('Timeline search - Start date:', timelineStartDate);
+            console.log('Timeline search - Start date:', currentStartDate);
             console.log('  Local Date object:', startDate.toString());
             console.log('  UTC Timestamp:', startTimestamp);
             console.log('  UTC Date:', new Date(startTimestamp * 1000).toUTCString());
         }
-        if (timelineEndDate) {
+        if (currentEndDate) {
             // Convert datetime-local to Unix timestamp
             // Use the exact time selected, not end of day
-            const endDate = new Date(timelineEndDate);
-            const endTimestamp = endDate.getTime() / 1000;
+            const endDate = new Date(currentEndDate);
+            const endTimestamp = Math.floor(endDate.getTime() / 1000);
             params.append('end_time', endTimestamp);
-            console.log('Timeline search - End date:', timelineEndDate);
+            console.log('Timeline search - End date:', currentEndDate);
             console.log('  Local Date object:', endDate.toString());
             console.log('  UTC Timestamp:', endTimestamp);
             console.log('  UTC Date:', new Date(endTimestamp * 1000).toUTCString());
@@ -770,6 +1014,10 @@ function displayConversationDetail(conversation) {
     
     title.textContent = conversation.title || 'Untitled Conversation';
     
+    // Get hidden messages from conversation data (from database)
+    const hiddenMessages = getHiddenMessagesFromConversation(conversation);
+    const showAllHidden = false; // Default to hiding hidden messages
+    
     // Create a map of feedback by message_id for quick lookup
     const feedbackByMessageId = {};
     if (conversation.feedback && conversation.feedback.length > 0) {
@@ -783,12 +1031,22 @@ function displayConversationDetail(conversation) {
         });
     }
     
+    // Count visible messages
+    const visibleMessageCount = conversation.messages.filter(msg => !hiddenMessages.has(msg.message_id)).length;
+    const hiddenMessageCount = hiddenMessages.size;
+    
     // Build HTML
     let html = `
         <div class="space-y-6">
             <!-- Conversation Metadata -->
             <div class="border-b border-gray-200 pb-4">
-                <h3 class="text-lg font-semibold text-gray-800 mb-3">Conversation Metadata</h3>
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-lg font-semibold text-gray-800">Conversation Metadata</h3>
+                    <button onclick="window.deleteConversation('${conversation.conversation_id}', '${escapeHtml(conversation.title || 'Untitled')}')" 
+                            class="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700">
+                        Delete Conversation
+                    </button>
+                </div>
                 <div class="grid grid-cols-2 gap-4 text-sm">
                     <div><span class="font-medium">Created:</span> ${formatTimestamp(conversation.create_time)}</div>
                     <div><span class="font-medium">Updated:</span> ${formatTimestamp(conversation.update_time)}</div>
@@ -810,7 +1068,20 @@ function displayConversationDetail(conversation) {
             <!-- Messages -->
             <div>
                 <div class="flex justify-between items-center mb-3">
-                    <h3 class="text-lg font-semibold text-gray-800">Messages (${conversation.messages.length})</h3>
+                    <div class="flex items-center space-x-4">
+                        <h3 class="text-lg font-semibold text-gray-800">Messages (${visibleMessageCount}${hiddenMessageCount > 0 ? `, ${hiddenMessageCount} hidden` : ''} of ${conversation.messages.length})</h3>
+                        ${hiddenMessageCount > 0 ? `
+                        <label class="flex items-center space-x-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="show-all-hidden" class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
+                                   onchange="window.toggleShowAllHidden('${conversation.conversation_id}', this.checked)">
+                            <span>Show All Hidden</span>
+                        </label>
+                        <button onclick="window.unhideAllMessages('${conversation.conversation_id}')" 
+                                class="px-3 py-1 text-sm bg-orange-600 text-white rounded-lg hover:bg-orange-700">
+                            Unhide All Messages
+                        </button>
+                        ` : ''}
+                    </div>
                     <div class="flex items-center space-x-2">
                         <input type="checkbox" id="select-all-messages" class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
                                onchange="window.toggleSelectAllMessages(this.checked)">
@@ -822,7 +1093,7 @@ function displayConversationDetail(conversation) {
                         </button>
                     </div>
                 </div>
-                <div class="space-y-4">
+                <div class="space-y-4" id="messages-container">
     `;
     
     conversation.messages.forEach((msg, index) => {
@@ -835,9 +1106,11 @@ function displayConversationDetail(conversation) {
         }[msg.role] || 'bg-gray-100 border-gray-300';
         
         const isSelected = selectedMessages.has(msg.message_id);
+        const isHidden = hiddenMessages.has(msg.message_id);
+        const hiddenClass = isHidden && !showAllHidden ? 'hidden' : '';
         
         html += `
-            <div id="message-${msg.message_id}" class="border-l-4 ${roleColor} p-4 rounded">
+            <div id="message-${msg.message_id}" class="border-l-4 ${roleColor} p-4 rounded message-item ${hiddenClass}" data-message-id="${msg.message_id}">
                 <div class="flex justify-between items-start mb-2">
                     <div class="flex items-center space-x-2 flex-1">
                         <input type="checkbox" class="message-checkbox w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" 
@@ -849,8 +1122,16 @@ function displayConversationDetail(conversation) {
                             ${msg.model ? `<span class="text-xs text-gray-500 ml-2">(${escapeHtml(msg.model)})</span>` : ''}
                         </div>
                     </div>
-                    <div class="text-xs text-gray-500">
-                        ${formatTimestamp(msg.create_time)}
+                    <div class="flex items-center space-x-2">
+                        <label class="flex items-center space-x-1 text-xs text-gray-600 cursor-pointer">
+                            <input type="checkbox" class="hide-message-checkbox w-4 h-4 rounded border-gray-300 text-orange-600 focus:ring-orange-500 cursor-pointer" 
+                                   ${isHidden ? 'checked' : ''}
+                                   onchange="window.toggleMessageHidden('${conversation.conversation_id}', '${msg.message_id}', this.checked).catch(err => console.error(err))">
+                            <span>Hide</span>
+                        </label>
+                        <div class="text-xs text-gray-500">
+                            ${formatTimestamp(msg.create_time)}
+                        </div>
                     </div>
                 </div>
                 <div class="text-sm text-gray-700 whitespace-pre-wrap">${escapeHtml(msg.content || '')}</div>
@@ -1000,6 +1281,187 @@ window.toggleSelectAllMessages = toggleSelectAllMessages;
 window.toggleMessageSelection = toggleMessageSelection;
 window.exportSelectedMessages = exportSelectedMessages;
 
+async function toggleMessageHidden(conversationId, messageId, isHidden) {
+    try {
+        // Update in database via API
+        await updateMessageHiddenStatus(messageId, isHidden);
+        
+        // Update the message visibility
+        const messageElement = document.getElementById(`message-${messageId}`);
+        if (messageElement) {
+            const showAllHiddenCheckbox = document.getElementById('show-all-hidden');
+            const showAllHidden = showAllHiddenCheckbox ? showAllHiddenCheckbox.checked : false;
+            
+            if (isHidden && !showAllHidden) {
+                messageElement.classList.add('hidden');
+            } else {
+                messageElement.classList.remove('hidden');
+            }
+        }
+        
+        // Update the message count in the header
+        updateMessageCount(conversationId);
+    } catch (error) {
+        console.error('Error toggling message hidden status:', error);
+        alert('Failed to update message hidden status. Please try again.');
+        // Revert checkbox state
+        const checkbox = document.querySelector(`input.hide-message-checkbox[value="${messageId}"]`);
+        if (checkbox) {
+            checkbox.checked = !isHidden;
+        }
+    }
+}
+
+function toggleShowAllHidden(conversationId, showAll) {
+    // Get hidden messages from the DOM (checkboxes)
+    const messageElements = document.querySelectorAll('.message-item');
+    const hiddenMessages = new Set();
+    
+    messageElements.forEach(element => {
+        const messageId = element.getAttribute('data-message-id');
+        const checkbox = element.querySelector(`input.hide-message-checkbox`);
+        if (checkbox && checkbox.checked) {
+            hiddenMessages.add(messageId);
+        }
+    });
+    
+    messageElements.forEach(element => {
+        const messageId = element.getAttribute('data-message-id');
+        if (hiddenMessages.has(messageId)) {
+            if (showAll) {
+                element.classList.remove('hidden');
+            } else {
+                element.classList.add('hidden');
+            }
+        }
+    });
+    
+    // Update the message count
+    updateMessageCount(conversationId);
+}
+
+function updateMessageCount(conversationId) {
+    // Get hidden messages from checkboxes in the DOM
+    const allMessages = document.querySelectorAll('.message-item');
+    const hiddenMessages = new Set();
+    
+    allMessages.forEach(element => {
+        const checkbox = element.querySelector(`input.hide-message-checkbox`);
+        if (checkbox && checkbox.checked) {
+            const messageId = element.getAttribute('data-message-id');
+            hiddenMessages.add(messageId);
+        }
+    });
+    
+    const visibleMessages = Array.from(allMessages).filter(msg => !msg.classList.contains('hidden'));
+    const hiddenCount = hiddenMessages.size;
+    const totalCount = allMessages.length;
+    
+    const header = document.querySelector('h3.text-lg.font-semibold.text-gray-800');
+    if (header) {
+        header.textContent = `Messages (${visibleMessages.length}${hiddenCount > 0 ? `, ${hiddenCount} hidden` : ''} of ${totalCount})`;
+    }
+}
+
+async function unhideAllMessages(conversationId) {
+    if (!confirm('Are you sure you want to unhide all messages in this conversation?')) {
+        return;
+    }
+    
+    try {
+        // Get all hidden messages in this conversation by finding checked hide checkboxes
+        const messageElements = document.querySelectorAll('.message-item');
+        const hiddenMessageIds = [];
+        
+        messageElements.forEach(element => {
+            const checkbox = element.querySelector('input.hide-message-checkbox');
+            if (checkbox && checkbox.checked) {
+                const messageId = element.getAttribute('data-message-id');
+                if (messageId) {
+                    hiddenMessageIds.push(messageId);
+                }
+            }
+        });
+        
+        if (hiddenMessageIds.length === 0) {
+            alert('No hidden messages found to unhide.');
+            return;
+        }
+        
+        // Unhide all messages in parallel
+        const promises = hiddenMessageIds.map(messageId => 
+            updateMessageHiddenStatus(messageId, false)
+        );
+        
+        await Promise.all(promises);
+        
+        // Update UI - uncheck all hide checkboxes and show all messages
+        messageElements.forEach(element => {
+            const checkbox = element.querySelector('input.hide-message-checkbox');
+            if (checkbox && checkbox.checked) {
+                checkbox.checked = false;
+            }
+            // Show all messages
+            element.classList.remove('hidden');
+        });
+        
+        // Update the message count
+        updateMessageCount(conversationId);
+        
+        // Uncheck "Show All Hidden" if it was checked
+        const showAllHiddenCheckbox = document.getElementById('show-all-hidden');
+        if (showAllHiddenCheckbox) {
+            showAllHiddenCheckbox.checked = false;
+        }
+        
+        alert(`Successfully unhid ${hiddenMessageIds.length} message(s).`);
+    } catch (error) {
+        console.error('Error unhiding messages:', error);
+        alert('Error unhiding messages. Please try again.');
+    }
+}
+
+window.toggleMessageHidden = toggleMessageHidden;
+window.toggleShowAllHidden = toggleShowAllHidden;
+window.unhideAllMessages = unhideAllMessages;
+
+async function deleteConversation(conversationId, conversationTitle) {
+    if (!confirm(`Are you sure you want to delete the conversation "${conversationTitle}"?\n\nThis will permanently delete:\n- The conversation\n- All messages\n- All feedback\n- All timeline entries\n- All comparisons\n\nThis action cannot be undone!`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/chatgpt-viewer/conversations/${conversationId}`, {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Close the modal
+            document.getElementById('detail-modal').classList.add('hidden');
+            
+            // Show success message
+            alert(`Conversation "${conversationTitle}" has been deleted.\n\nDeleted:\n- ${data.deleted.messages} message(s)\n- ${data.deleted.feedback} feedback record(s)\n- ${data.deleted.timeline_entries} timeline entry/entries\n- ${data.deleted.comparisons} comparison(s)`);
+            
+            // Refresh stats and conversation list
+            loadStats();
+            if (currentView === 'list') {
+                loadConversations();
+            } else if (currentView === 'timeline') {
+                loadTimeline();
+            }
+        } else {
+            alert('Error deleting conversation: ' + (data.detail || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error deleting conversation:', error);
+        alert('Error deleting conversation: ' + error.message);
+    }
+}
+
+window.deleteConversation = deleteConversation;
+
 async function startImport() {
     if (!confirm('Start importing all folders from chatlog? This may take a while.')) {
         return;
@@ -1063,6 +1525,16 @@ function formatTimestamp(timestamp) {
     if (!timestamp) return 'N/A';
     const date = new Date(timestamp * 1000);
     return date.toLocaleString();
+}
+
+function formatDateOnly(timestamp) {
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp * 1000);
+    // Format as M/D/YYYY (e.g., 3/1/2025)
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const year = date.getFullYear();
+    return `${month}/${day}/${year}`;
 }
 
 function escapeHtml(text) {

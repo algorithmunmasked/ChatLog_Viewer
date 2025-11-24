@@ -4,6 +4,7 @@ Run with: uvicorn app.main:app --reload --port 8002
 Or from project root: uvicorn app.main:app --reload --port 8002
 """
 import os
+import time
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -60,7 +61,14 @@ def template_response(template_name: str, request: Request, **kwargs):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Main viewer page"""
-    return template_response("index.html", request)
+    # Add cache-busting version for app.js based on file modification time
+    app_js_path = frontend_path / "app.js"
+    if app_js_path.exists():
+        version = int(app_js_path.stat().st_mtime)
+    else:
+        version = int(time.time())
+    
+    return template_response("index.html", request, app_js_version=version)
 
 @app.get("/health")
 async def health():

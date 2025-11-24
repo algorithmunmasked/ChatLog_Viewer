@@ -209,9 +209,20 @@ class HTMLImportService:
             ChatGPTConversation.conversation_id == conversation_id
         ).first()
         
-        if existing_conv:
-            # Conversation already imported from JSON, skip (not an error)
-            return {'conversations': 0, 'messages': 0, 'reason': 'already_exists'}
+        is_new_conversation = existing_conv is None
+        
+        # If conversation exists and has messages from JSON import, skip HTML import
+        # HTML exports often have incomplete data and different message IDs
+        if existing_conv and not is_new_conversation:
+            from .models import ChatGPTMessage
+            existing_message_count = db.query(ChatGPTMessage).filter(
+                ChatGPTMessage.conversation_id == conversation_id
+            ).count()
+            
+            # If conversation has messages and export_folder suggests JSON import (not HTMLS), skip
+            if existing_message_count > 0 and existing_conv.export_folder and not existing_conv.export_folder.startswith('HTMLS/'):
+                # Conversation already imported from JSON with messages, skip HTML import
+                return {'conversations': 0, 'messages': 0, 'reason': 'already_exists_json'}
         
         # Get file modification time - this is the most reliable date source for HTML exports
         file_mtime = None
@@ -246,26 +257,56 @@ class HTMLImportService:
             if not update_time:
                 update_time = datetime.utcnow().timestamp()
         
-        # Create conversation record
-        conversation = ChatGPTConversation(
-            conversation_id=conversation_id,
-            title=title,
-            create_time=create_time,
-            update_time=update_time,
-            export_folder=f'HTMLS/{relative_path}',
-            raw_data=json.dumps({'source': 'html_export', 'filename': html_filename, 'file_mtime': file_mtime})
-        )
+        # Create or update conversation record
+        if is_new_conversation:
+            conversation = ChatGPTConversation(
+                conversation_id=conversation_id,
+                title=title,
+                create_time=create_time,
+                update_time=update_time,
+                export_folder=f'HTMLS/{relative_path}',
+                raw_data=json.dumps({'source': 'html_export', 'filename': html_filename, 'file_mtime': file_mtime})
+            )
+            db.add(conversation)
+            db.flush()
+            
+            # Create conversation creation timeline entry
+            if messages:
+                timeline_entry = ChatGPTTimeline(
+                    conversation_id=conversation_id,
+                    event_type='conversation_created',
+                    timestamp=messages[0].get('timestamp', datetime.utcnow().timestamp()),
+                    title_preview=title,
+                    timeline_metadata=json.dumps({'title': title, 'source': 'html_export'})
+                )
+                db.add(timeline_entry)
+        else:
+            # Update existing conversation metadata
+            if update_time and (not existing_conv.update_time or update_time > existing_conv.update_time):
+                existing_conv.update_time = update_time
+            if title and title != existing_conv.title:
+                existing_conv.title = title
+            db.flush()
         
-        db.add(conversation)
-        db.flush()
-        
-        # Import messages
+        # Import messages - check each message by message_id
         message_count = 0
         for msg_data in messages:
             try:
+                message_id = msg_data.get('message_id', f"html_{msg_data.get('index', 0)}")
+                
+                # Check if message already exists
+                existing_msg = db.query(ChatGPTMessage).filter(
+                    ChatGPTMessage.message_id == message_id,
+                    ChatGPTMessage.conversation_id == conversation_id
+                ).first()
+                
+                if existing_msg:
+                    # Message already exists, skip it
+                    continue
+                
                 message = ChatGPTMessage(
                     conversation_id=conversation_id,
-                    message_id=msg_data.get('message_id', f"html_{msg_data.get('index', 0)}"),
+                    message_id=message_id,
                     parent_id=msg_data.get('parent_id'),
                     role=msg_data.get('role'),
                     author=msg_data.get('role'),
@@ -288,10 +329,13 @@ class HTMLImportService:
                         conversation_id=conversation_id,
                         event_type='message_sent',
                         timestamp=msg_data.get('timestamp'),
-                        event_data=json.dumps({
-                            'message_id': msg_data.get('message_id'),
+                        message_id=message_id,
+                        title_preview='',
+                        content_preview=msg_data.get('content', '')[:500],
+                        timeline_metadata=json.dumps({
                             'role': msg_data.get('role'),
-                            'content_preview': msg_data.get('content', '')[:200]
+                            'model': msg_data.get('model'),
+                            'source': 'html_export'
                         })
                     )
                     db.add(timeline_entry)
@@ -299,20 +343,10 @@ class HTMLImportService:
                 # Skip problematic messages but continue
                 continue
         
-        # Create conversation creation timeline entry
-        if messages:
-            timeline_entry = ChatGPTTimeline(
-                conversation_id=conversation_id,
-                event_type='conversation_created',
-                timestamp=messages[0].get('timestamp', datetime.utcnow().timestamp()),
-                event_data=json.dumps({'title': title, 'source': 'html_export'})
-            )
-            db.add(timeline_entry)
-        
         db.commit()
         
         return {
-            'conversations': 1,
+            'conversations': 1 if is_new_conversation else 0,
             'messages': message_count
         }
     
