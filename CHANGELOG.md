@@ -2,7 +2,7 @@
 
 All notable changes to the ChatLog Viewer project will be documented in this file.
 
-## [Unreleased] - 2025-01-XX
+## [Version 1.2] - 2025-11-23
 
 ### Added
 
